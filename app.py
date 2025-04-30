@@ -284,6 +284,116 @@ def create_2d_projection(tube, coil, magnet, pipe_thickness):
     
     return fig
 
+def create_magnet_animation(tube, coil, magnet, velocity):
+    """Create an animated visualization of the magnet moving through the coil"""
+    # Calculate total animation time based on tube length and velocity
+    total_time = tube['length'] / 1000 / velocity  # Convert mm to m
+    num_frames = 50
+    times = np.linspace(0, total_time, num_frames)
+    
+    # Calculate magnet positions
+    positions = np.array([velocity * t * 1000 for t in times])  # Convert back to mm for display
+    
+    # Create the base figure
+    fig = go.Figure()
+    
+    # Add tube outline (static)
+    tube_y = np.array([0, tube['length']])
+    tube_x = np.array([tube['inner_diameter']/2, tube['inner_diameter']/2])
+    fig.add_trace(go.Scatter(x=tube_x, y=tube_y, mode='lines', name='Tube', line=dict(color='gray')))
+    fig.add_trace(go.Scatter(x=-tube_x, y=tube_y, mode='lines', showlegend=False, line=dict(color='gray')))
+    
+    # Add coils (static)
+    num_coils = 5
+    coil_length = coil['length'] / num_coils
+    space_length = coil_length * 0.5
+    
+    for i in range(num_coils):
+        y_pos = i * (coil_length + space_length)
+        coil_y = np.array([y_pos, y_pos + coil_length])
+        coil_x = np.array([coil['outer_diameter']/2, coil['outer_diameter']/2])
+        fig.add_trace(go.Scatter(x=coil_x, y=coil_y, mode='lines', name=f'Coil {i+1}', 
+                                line=dict(color='brown', width=4)))
+        fig.add_trace(go.Scatter(x=-coil_x, y=coil_y, mode='lines', showlegend=False, 
+                                line=dict(color='brown', width=4)))
+    
+    # Add magnet (animated)
+    magnet_y = np.array([0, magnet['length']])
+    magnet_x = np.array([magnet['diameter']/2, magnet['diameter']/2])
+    
+    frames = []
+    for pos in positions:
+        frame = go.Frame(
+            data=[
+                # Keep tube and coils
+                go.Scatter(x=tube_x, y=tube_y, mode='lines', line=dict(color='gray')),
+                go.Scatter(x=-tube_x, y=tube_y, mode='lines', line=dict(color='gray')),
+            ] + 
+            [
+                go.Scatter(x=coil_x, y=np.array([i * (coil_length + space_length), 
+                                                i * (coil_length + space_length) + coil_length]), 
+                          mode='lines', line=dict(color='brown', width=4))
+                for i in range(num_coils)
+            ] +
+            [
+                go.Scatter(x=-coil_x, y=np.array([i * (coil_length + space_length), 
+                                                 i * (coil_length + space_length) + coil_length]), 
+                          mode='lines', line=dict(color='brown', width=4))
+                for i in range(num_coils)
+            ] +
+            [
+                # Moving magnet
+                go.Scatter(x=magnet_x, y=magnet_y + pos, mode='lines', name='Magnet',
+                          line=dict(color='red', width=4)),
+                go.Scatter(x=-magnet_x, y=magnet_y + pos, mode='lines', showlegend=False,
+                          line=dict(color='red', width=4))
+            ]
+        )
+        frames.append(frame)
+    
+    fig.frames = frames
+    
+    # Add play button and slider
+    fig.update_layout(
+        updatemenus=[{
+            'type': 'buttons',
+            'showactive': False,
+            'buttons': [{
+                'label': 'Play',
+                'method': 'animate',
+                'args': [None, {
+                    'frame': {'duration': total_time * 1000 / num_frames, 'redraw': True},
+                    'fromcurrent': True,
+                    'mode': 'immediate',
+                    'transition': {'duration': 0}
+                }]
+            }]
+        }],
+        sliders=[{
+            'currentvalue': {'prefix': 'Time: ', 'suffix': ' s'},
+            'steps': [{'args': [[f.name], {
+                'frame': {'duration': 0, 'redraw': True},
+                'mode': 'immediate',
+                'transition': {'duration': 0}
+            }],
+                'label': f'{t:.2f}',
+                'method': 'animate'} for t, f in zip(times, frames)]
+        }]
+    )
+    
+    # Update layout
+    fig.update_layout(
+        xaxis=dict(range=[-tube['inner_diameter'], tube['inner_diameter']]),
+        yaxis=dict(range=[-magnet['length'], tube['length'] + magnet['length']]),
+        title='Magnet Movement Animation',
+        xaxis_title='Position (mm)',
+        yaxis_title='Position (mm)',
+        showlegend=True,
+        height=800
+    )
+    
+    return fig
+
 # Title and description
 st.title("⚡ Electromagnetic Generator Calculator")
 st.markdown("""
@@ -342,6 +452,23 @@ with main_col1:
                 explicit_params['wire_diameter'] = wire_diameter
             else:
                 wire_diameter = 1.0  # Default value if not specified
+
+        # Operating parameters
+        st.subheader("Operating Parameters")
+        op_col1, op_col2 = st.columns(2)
+        with op_col1:
+            magnet_velocity = st.number_input(
+                "Magnet Velocity (m/s)",
+                min_value=0.1,
+                max_value=10.0,
+                value=None,
+                step=0.1,
+                help="Speed at which the magnet moves through the coil. Leave blank for automatic optimization"
+            )
+            if magnet_velocity is not None:
+                explicit_params['magnet_velocity'] = magnet_velocity
+            else:
+                magnet_velocity = 2.0  # Default value if not specified
 
         # Coil parameters
         st.subheader("Coil Configuration")
@@ -454,6 +581,38 @@ with main_col1:
         </div>
         """, unsafe_allow_html=True)
 
+    # Add connection type selection before calculate button
+    st.subheader("Connection Configuration")
+    connection_type = st.selectbox(
+        "Coil Connection Type",
+        ["series", "parallel", "series_parallel"],
+        index=0,
+        help="Choose how coils are connected: series (higher voltage), parallel (higher current), or series-parallel (balanced)"
+    )
+
+    # Show additional controls for series-parallel configuration
+    if connection_type == "series_parallel":
+        col1, col2 = st.columns(2)
+        with col1:
+            series_groups = st.number_input(
+                "Number of Series Groups",
+                min_value=1,
+                max_value=10,
+                value=2,
+                help="Number of groups connected in series"
+            )
+        with col2:
+            parallel_coils = st.number_input(
+                "Coils per Group",
+                min_value=1,
+                max_value=10,
+                value=2,
+                help="Number of coils connected in parallel within each group"
+            )
+    else:
+        series_groups = 1
+        parallel_coils = 1
+
     # Calculate button with emphasis
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("""
@@ -480,7 +639,10 @@ with main_col1:
     """, unsafe_allow_html=True)
     
     if st.button("Calculate Generator Specifications", type="primary", use_container_width=True):
-        # Create magnet_specs dictionary only including explicitly set parameters
+        # Initialize calculator
+        calculator = ElectromagneticCalculator()
+        
+        # Create magnet_specs dictionary
         magnet_specs = {
             "material": magnet_material,
             "diameter": magnet_diameter/1000,  # Convert to meters
@@ -498,19 +660,19 @@ with main_col1:
         if 'magnetic_field' in explicit_params:
             magnet_specs['magnetic_field'] = explicit_params['magnetic_field']
 
-        calculator = ElectromagneticCalculator()
         results = calculator.calculate_system(
             target_voltage=target_voltage,
             target_current=target_current,
-            wire_diameter=wire_diameter/1000 if 'wire_diameter' in explicit_params else None,
-            pipe_thickness=pipe_thickness/1000 if 'pipe_thickness' in explicit_params else None,
-            num_coils=num_coils if 'num_coils' in explicit_params else None,
-            coil_spacing=coil_spacing if 'coil_spacing' in explicit_params else None,
+            wire_diameter=wire_diameter if 'wire_diameter' in explicit_params else None,
+            pipe_thickness=pipe_thickness if 'pipe_thickness' in explicit_params else None,
+            num_coils=num_coils if 'num_coils' in explicit_params else 5,
+            coil_spacing=coil_spacing if 'coil_spacing' in explicit_params else 0.5,
             magnet_specs=magnet_specs if any(k in explicit_params for k in ['magnet_material', 'magnet_diameter', 'magnet_length', 'magnetic_field']) else None,
-            connection_type="series",
-            series_groups=1,
-            parallel_coils=1
+            connection_type=connection_type,
+            series_groups=series_groups,
+            parallel_coils=parallel_coils
         )
+        
         recommendations = calculator.get_recommendations()
         weights = calculator.calculate_component_weights(results)
         
@@ -518,12 +680,20 @@ with main_col1:
         st.session_state.results = results
         st.session_state.recommendations = recommendations
         st.session_state.weights = weights
+        
+        # If user specified a velocity, show a warning if it's different from the optimal
+        if 'magnet_velocity' in explicit_params and abs(magnet_velocity - results['performance']['velocity']) > 0.1:
+            st.warning(f"""
+                The specified velocity ({magnet_velocity:.1f} m/s) is different from the optimal velocity 
+                ({results['performance']['velocity']:.1f} m/s) needed to achieve the target voltage and current. 
+                The animation will show your specified velocity, but the actual output may differ.
+                """)
 
 # Right column for visualization
 with main_col2:
     st.header("System Visualization")
     if 'results' in st.session_state:
-        tab1, tab2 = st.tabs(["3D View", "2D View"])
+        tab1, tab2, tab3 = st.tabs(["3D View", "2D View", "Movement Animation"])
         
         with tab1:
             fig_3d = create_3d_view(
@@ -542,6 +712,17 @@ with main_col2:
                 pipe_thickness
             )
             st.plotly_chart(fig_2d, use_container_width=True)
+            
+        with tab3:
+            velocity = magnet_velocity if 'magnet_velocity' in explicit_params else st.session_state.results['performance']['velocity']
+            fig_animation = create_magnet_animation(
+                st.session_state.results['tube'],
+                st.session_state.results['coil'],
+                st.session_state.results['magnet'],
+                velocity
+            )
+            st.plotly_chart(fig_animation, use_container_width=True)
+            st.info(f"The animation shows the magnet moving at {velocity:.1f} m/s through the coil. Click 'Play' to start the animation.")
 
 # Results section (full width)
 if 'results' in st.session_state:
@@ -884,72 +1065,29 @@ with formulas_tab:
     \end{align*}
     """)
 
-# Add connection type selection
-connection_type = st.selectbox(
-    "Coil Connection Type",
-    ["series", "parallel", "series_parallel"],
-    index=0,
-    help="Choose how coils are connected: series (higher voltage), parallel (higher current), or series-parallel (balanced)"
-)
+# Display connection information and specifications only if results exist
+if 'results' in st.session_state:
+    # Add connection information to the results display
+    st.subheader("Connection Configuration")
+    connection_info = {
+        "series": "All coils connected in series (higher voltage, same current)",
+        "parallel": "All coils connected in parallel (same voltage, higher current)",
+        "series_parallel": f"{series_groups} groups of {parallel_coils} parallel coils each (balanced voltage and current)"
+    }
+    st.info(connection_info[connection_type])
 
-# Show additional controls for series-parallel configuration
-if connection_type == "series_parallel":
-    col1, col2 = st.columns(2)
-    with col1:
-        series_groups = st.number_input(
-            "Number of Series Groups",
-            min_value=1,
-            max_value=10,
-            value=2,
-            help="Number of groups connected in series"
-        )
-    with col2:
-        parallel_coils = st.number_input(
-            "Coils per Group",
-            min_value=1,
-            max_value=10,
-            value=2,
-            help="Number of coils connected in parallel within each group"
-        )
-else:
-    series_groups = 1
-    parallel_coils = 1
-
-# Update the calculation call
-results = calculator.calculate_system(
-    target_voltage=target_voltage,
-    target_current=target_current,
-    wire_diameter=wire_diameter if 'wire_diameter' in explicit_params else None,
-    pipe_thickness=pipe_thickness if 'pipe_thickness' in explicit_params else None,
-    num_coils=num_coils if 'num_coils' in explicit_params else 5,
-    coil_spacing=coil_spacing if 'coil_spacing' in explicit_params else 0.5,
-    magnet_specs=magnet_specs if any(k in explicit_params for k in ['magnet_material', 'magnet_diameter', 'magnet_length', 'magnetic_field']) else None,
-    connection_type=connection_type,
-    series_groups=series_groups,
-    parallel_coils=parallel_coils
-)
-
-# Add connection information to the results display
-st.subheader("Connection Configuration")
-connection_info = {
-    "series": "All coils connected in series (higher voltage, same current)",
-    "parallel": "All coils connected in parallel (same voltage, higher current)",
-    "series_parallel": f"{series_groups} groups of {parallel_coils} parallel coils each (balanced voltage and current)"
-}
-st.info(connection_info[connection_type])
-
-# Update the coil specifications display
-st.subheader("Coil Specifications")
-coil_specs = results["coil"]
-st.write(f"**Connection Type:** {coil_specs['connection']['type']}")
-if connection_type == "series_parallel":
-    st.write(f"**Series Groups:** {coil_specs['connection']['series_groups']}")
-    st.write(f"**Parallel Coils per Group:** {coil_specs['connection']['parallel_coils']}")
-st.write(f"**Total Coils:** {coil_specs['num_sections']}")
-st.write(f"**Turns per Coil:** {coil_specs['turns'] // coil_specs['num_sections']}")
-st.write(f"**Wire Diameter:** {coil_specs['wire_diameter']:.2f} mm")
-st.write(f"**Coil Inner Diameter:** {coil_specs['inner_diameter']:.2f} mm")
-st.write(f"**Coil Outer Diameter:** {coil_specs['outer_diameter']:.2f} mm")
-st.write(f"**Coil Length:** {coil_specs['length']:.2f} mm")
-st.write(f"**Coil Spacing:** {coil_specs['spacing']:.2f} mm")
-st.write(f"**Total Resistance:** {coil_specs['resistance']:.2f} Ω") 
+    # Update the coil specifications display
+    st.subheader("Coil Specifications")
+    coil_specs = st.session_state.results["coil"]
+    st.write(f"**Connection Type:** {coil_specs['connection']['type']}")
+    if connection_type == "series_parallel":
+        st.write(f"**Series Groups:** {coil_specs['connection']['series_groups']}")
+        st.write(f"**Parallel Coils per Group:** {coil_specs['connection']['parallel_coils']}")
+    st.write(f"**Total Coils:** {coil_specs['num_sections']}")
+    st.write(f"**Turns per Coil:** {coil_specs['turns'] // coil_specs['num_sections']}")
+    st.write(f"**Wire Diameter:** {coil_specs['wire_diameter']:.2f} mm")
+    st.write(f"**Coil Inner Diameter:** {coil_specs['inner_diameter']:.2f} mm")
+    st.write(f"**Coil Outer Diameter:** {coil_specs['outer_diameter']:.2f} mm")
+    st.write(f"**Coil Length:** {coil_specs['length']:.2f} mm")
+    st.write(f"**Coil Spacing:** {coil_specs['spacing']:.2f} mm")
+    st.write(f"**Total Resistance:** {coil_specs['resistance']:.2f} Ω") 
