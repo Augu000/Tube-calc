@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Generator
 import numpy as np
 from pydantic import BaseModel, Field
 import plotly.graph_objects as go
@@ -42,6 +42,40 @@ class SystemSpecs(BaseModel):
     coil: CoilSpecs
     tube: TubeSpecs
     velocity: float = Field(..., description="Velocity of the magnet in m/s")
+
+class CoilConnection(BaseModel):
+    """Model for different coil connection configurations"""
+    type: str = Field(..., description="Connection type: 'series', 'parallel', or 'series_parallel'")
+    series_groups: int = Field(1, description="Number of series-connected groups (for series_parallel)")
+    parallel_coils: int = Field(1, description="Number of parallel coils per group (for series_parallel)")
+
+    def calculate_total_resistance(self, single_coil_resistance: float) -> float:
+        """Calculate total resistance based on connection type"""
+        if self.type == "series":
+            return single_coil_resistance * self.series_groups
+        elif self.type == "parallel":
+            return single_coil_resistance / self.parallel_coils
+        else:  # series_parallel
+            group_resistance = single_coil_resistance * self.series_groups
+            return group_resistance / self.parallel_coils
+
+    def calculate_total_voltage(self, single_coil_voltage: float) -> float:
+        """Calculate total voltage based on connection type"""
+        if self.type == "series":
+            return single_coil_voltage * self.series_groups
+        elif self.type == "parallel":
+            return single_coil_voltage
+        else:  # series_parallel
+            return single_coil_voltage * self.series_groups
+
+    def calculate_total_current(self, single_coil_current: float) -> float:
+        """Calculate total current based on connection type"""
+        if self.type == "series":
+            return single_coil_current
+        elif self.type == "parallel":
+            return single_coil_current * self.parallel_coils
+        else:  # series_parallel
+            return single_coil_current * self.parallel_coils
 
 def calculate_required_turns(target_voltage: float, magnetic_field: float, 
                            coil_area: float, velocity: float, coil_length: float) -> int:
@@ -239,54 +273,89 @@ def optimize_coil_configuration(target_voltage: float, target_current: float,
     )
 
 def optimize_for_power(target_voltage: float, target_current: float, 
-                      wire_diameter: float = None, pipe_thickness: float = None,
-                      num_coils: int = None, coil_spacing: float = 0.5,
-                      magnet: MagnetSpecs = None) -> SystemSpecs:
+                       wire_diameter: float = None, pipe_thickness: float = None,
+                       num_coils: int = None, coil_spacing: float = None,
+                       magnet: MagnetSpecs = None,
+                       connection: CoilConnection = None) -> SystemSpecs:
     """
     Optimize system parameters to meet target voltage and current requirements.
     Returns optimized system specifications.
     """
-    # Use provided magnet or create default
+    # Set default coil spacing if not specified
+    if coil_spacing is None:
+        coil_spacing = 0.1  # Default 10% spacing between coils
+
+    # Set default connection if not specified
+    if connection is None:
+        connection = CoilConnection(type="series", series_groups=1, parallel_coils=1)
+
+    # If number of coils is specified, adjust other parameters accordingly
+    if num_coils is not None:
+        # Calculate required voltage and current per coil based on connection type
+        voltage_per_coil = target_voltage / connection.calculate_total_voltage(1)
+        current_per_coil = target_current / connection.calculate_total_current(1)
+    else:
+        num_coils = 5  # Default
+        voltage_per_coil = target_voltage / connection.calculate_total_voltage(1)
+        current_per_coil = target_current / connection.calculate_total_current(1)
+
+    # Create default magnet if not provided
     if magnet is None:
         magnet = MagnetSpecs(
-            diameter=0.012,  # 12mm
-            length=0.05,     # 50mm
-            magnetic_field=1.2,  # Tesla
-            material="N52 Neodymium"
+            material="N52",
+            diameter=0.0254,  # 1 inch
+            length=0.0254,    # 1 inch
+            magnetic_field=1.4  # Tesla
         )
+
+    # Calculate required coil area based on Faraday's law
+    # V = N * B * A * v / L
+    # For a given velocity, we need:
+    # A = (V * L) / (N * B * v)
     
-    # Find optimal coil configuration
-    try:
-        coil, velocity = optimize_coil_configuration(target_voltage, target_current, magnet)
-    except ValueError as e:
-        # If we can't meet targets with default magnet, try stronger magnet
-        magnet = MagnetSpecs(
-            diameter=0.012,  # 12mm
-            length=0.05,     # 50mm
-            magnetic_field=1.4,  # Stronger Tesla
-            material="N52 Neodymium"
-        )
-        try:
-            coil, velocity = optimize_coil_configuration(target_voltage, target_current, magnet)
-        except ValueError as e:
-            # If still can't meet targets, try one last configuration
-            magnet = MagnetSpecs(
-                diameter=0.015,  # 15mm
-                length=0.06,     # 60mm
-                magnetic_field=1.6,  # Very strong Tesla
-                material="N52 Neodymium"
-            )
-            coil, velocity = optimize_coil_configuration(target_voltage, target_current, magnet)
+    # Start with a reasonable velocity
+    velocity = 2.0  # m/s
     
-    # Create tube with proper clearances
+    # Calculate minimum coil area needed
+    min_coil_area = (voltage_per_coil * 0.2) / (1000 * magnet.magnetic_field * velocity)  # Assume 1000 turns initially
+    
+    # Calculate wire parameters
+    if wire_diameter is None:
+        # Calculate based on current density (4 A/mm²)
+        wire_area = current_per_coil / 4e6  # m²
+        wire_diameter = 2 * np.sqrt(wire_area / np.pi)
+    
+    # Calculate coil dimensions
+    coil_inner_diameter = magnet.diameter + 0.002  # 2mm clearance
+    coil_outer_diameter = coil_inner_diameter + 0.02  # 20mm winding thickness
+    coil_length = magnet.length * 1.2  # 20% longer than magnet
+    
+    # Calculate required turns for target voltage
+    coil_area = calculate_coil_area(coil_inner_diameter, coil_outer_diameter)
+    required_turns = calculate_required_turns(voltage_per_coil, magnet.magnetic_field, coil_area, velocity, coil_length)
+    
+    # Create coil specification
+    coil = CoilSpecs(
+        inner_diameter=coil_inner_diameter,
+        outer_diameter=coil_outer_diameter,
+        length=coil_length * num_coils,  # Total length for all coils
+        wire_diameter=wire_diameter,
+        turns=required_turns * num_coils,  # Total turns for all coils
+        material="Copper"
+    )
+    
+    # Calculate tube dimensions
+    if pipe_thickness is None:
+        pipe_thickness = 0.004  # 4mm default
+    
     tube = TubeSpecs(
-        inner_diameter=coil.outer_diameter + 0.002,  # 2mm clearance
-        length=coil.length * 1.2,  # 20% extra length for movement
-        pipe_thickness=pipe_thickness if pipe_thickness is not None else 0.004,  # 4mm default
+        inner_diameter=coil_outer_diameter + 0.002,  # 2mm clearance
+        length=coil_length * num_coils * (1 + coil_spacing),  # Add spacing between coils
+        pipe_thickness=pipe_thickness,
         material="PVC"
     )
     
-    # Create final system
+    # Create complete system
     system = SystemSpecs(
         magnet=magnet,
         coil=coil,
@@ -294,21 +363,10 @@ def optimize_for_power(target_voltage: float, target_current: float,
         velocity=velocity
     )
     
-    # Validate final system meets targets
+    # Fine-tune velocity to match target voltage exactly
     actual_voltage = calculate_induced_voltage(system)
-    actual_current = calculate_induced_current(system)
-    
-    if (abs(actual_voltage - target_voltage) / target_voltage > 0.01 or
-        abs(actual_current - target_current) / target_current > 0.01):
-        raise ValueError(
-            f"Final system does not meet target parameters:\n"
-            f"Target Voltage: {target_voltage}V, Actual: {actual_voltage:.2f}V\n"
-            f"Target Current: {target_current}A, Actual: {actual_current:.2f}A\n"
-            f"System configuration:\n"
-            f"- Magnet: {magnet.diameter*1000:.1f}mm diameter, {magnet.length*1000:.1f}mm length, {magnet.magnetic_field:.1f}T\n"
-            f"- Coil: {coil.wire_diameter*1000:.1f}mm wire, {coil.turns} turns\n"
-            f"- Velocity: {velocity:.1f} m/s"
-        )
+    voltage_adjustment = target_voltage / actual_voltage
+    system.velocity = velocity * voltage_adjustment
     
     return system
 

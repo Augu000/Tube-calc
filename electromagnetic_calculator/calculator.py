@@ -1,7 +1,7 @@
 from typing import Dict, Any
 import numpy as np
 from .physics import (
-    SystemSpecs, MagnetSpecs, CoilSpecs, TubeSpecs,
+    SystemSpecs, MagnetSpecs, CoilSpecs, TubeSpecs, CoilConnection,
     calculate_induced_voltage, calculate_induced_current,
     calculate_power, optimize_for_power, calculate_component_weights,
     calculate_coil_resistance
@@ -16,7 +16,10 @@ class ElectromagneticCalculator:
     def calculate_system(self, target_voltage: float, target_current: float, 
                         wire_diameter: float = None, pipe_thickness: float = None,
                         num_coils: int = 5, coil_spacing: float = 0.5,
-                        magnet_specs: dict = None) -> Dict[str, Any]:
+                        magnet_specs: dict = None,
+                        connection_type: str = "series",
+                        series_groups: int = 1,
+                        parallel_coils: int = 1) -> Dict[str, Any]:
         """
         Calculate the optimal system parameters for given target voltage and current
         
@@ -32,6 +35,9 @@ class ElectromagneticCalculator:
                          - diameter: Diameter in meters
                          - length: Length in meters
                          - magnetic_field: Field strength in Tesla
+            connection_type: How coils are connected ('series', 'parallel', or 'series_parallel')
+            series_groups: Number of series-connected groups (for series_parallel)
+            parallel_coils: Number of parallel coils per group (for series_parallel)
         """
         # Use provided magnet specs or defaults
         if magnet_specs is None:
@@ -49,6 +55,13 @@ class ElectromagneticCalculator:
                 material=magnet_specs['material']
             )
 
+        # Create connection configuration
+        connection = CoilConnection(
+            type=connection_type,
+            series_groups=series_groups,
+            parallel_coils=parallel_coils
+        )
+
         self.system = optimize_for_power(
             target_voltage=target_voltage,
             target_current=target_current,
@@ -56,7 +69,8 @@ class ElectromagneticCalculator:
             pipe_thickness=pipe_thickness,
             num_coils=num_coils,
             coil_spacing=coil_spacing,
-            magnet=magnet
+            magnet=magnet,
+            connection=connection
         )
         
         # Calculate actual performance
@@ -84,7 +98,12 @@ class ElectromagneticCalculator:
                 "material": self.system.coil.material,
                 "resistance": calculate_coil_resistance(self.system.coil),  # Ω
                 "num_sections": num_coils,
-                "spacing": coil_spacing
+                "spacing": coil_spacing,
+                "connection": {
+                    "type": connection_type,
+                    "series_groups": series_groups,
+                    "parallel_coils": parallel_coils
+                }
             },
             "tube": {
                 "inner_diameter": self.system.tube.inner_diameter * 1000,  # mm

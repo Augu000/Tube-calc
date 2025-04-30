@@ -2,6 +2,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import numpy as np
 from electromagnetic_calculator import ElectromagneticCalculator
+from electromagnetic_calculator.physics import calculate_wire_length, CoilSpecs
 
 # Set page config
 st.set_page_config(
@@ -297,8 +298,8 @@ main_col1, main_col2 = st.columns([1, 1])
 with main_col1:
     st.header("Input Parameters")
     
-    # Target output parameters
-    st.subheader("Target Output")
+    # Required parameters
+    st.subheader("Required Parameters")
     target_col1, target_col2 = st.columns(2)
     with target_col1:
         target_voltage = st.number_input(
@@ -320,115 +321,195 @@ with main_col1:
             help="The current you want to generate"
         )
 
-    # Wire parameters
-    st.subheader("Wire Specifications")
-    wire_col1, wire_col2 = st.columns(2)
-    with wire_col1:
-        wire_diameter = st.number_input(
-            "Wire Diameter (mm)",
-            min_value=0.1,
-            max_value=5.0,
-            value=1.0,
-            step=0.1,
-            help="The diameter of the copper wire"
-        )
-        wire_material = st.selectbox(
-            "Wire Material",
-            options=["Copper"],
-            help="Material of the wire (currently only copper is supported)"
-        )
+    # Optional parameters (expanded by default)
+    with st.expander("Optional Parameters (leave blank for automatic optimization)", expanded=True):
+        # Track which parameters are explicitly set
+        explicit_params = {}
+        
+        # Wire parameters
+        st.subheader("Wire Specifications")
+        wire_col1, wire_col2 = st.columns(2)
+        with wire_col1:
+            wire_diameter = st.number_input(
+                "Wire Diameter (mm)",
+                min_value=0.1,
+                max_value=5.0,
+                value=None,
+                step=0.1,
+                help="Leave blank for automatic optimization"
+            )
+            if wire_diameter is not None:
+                explicit_params['wire_diameter'] = wire_diameter
+            else:
+                wire_diameter = 1.0  # Default value if not specified
 
-    # Coil parameters
-    st.subheader("Coil Configuration")
-    coil_col1, coil_col2 = st.columns(2)
-    with coil_col1:
-        num_coils = st.number_input(
-            "Number of Coils",
-            min_value=1,
-            max_value=20,
-            value=5,
-            step=1,
-            help="Number of coil sections in the generator"
-        )
-    with coil_col2:
-        coil_spacing = st.number_input(
-            "Coil Spacing Factor",
-            min_value=0.1,
-            max_value=2.0,
-            value=0.5,
-            step=0.1,
-            help="Space between coils as a factor of coil length (0.5 means half coil length)"
-        )
+        # Coil parameters
+        st.subheader("Coil Configuration")
+        coil_col1, coil_col2 = st.columns(2)
+        with coil_col1:
+            num_coils = st.number_input(
+                "Number of Coil Sections",
+                min_value=1,
+                max_value=20,
+                value=None,
+                step=1,
+                help="Leave blank for automatic optimization"
+            )
+            if num_coils is not None:
+                explicit_params['num_coils'] = num_coils
+            else:
+                num_coils = 5  # Default value if not specified
+        
+        with coil_col2:
+            coil_spacing = st.number_input(
+                "Coil Spacing Factor",
+                min_value=0.1,
+                max_value=2.0,
+                value=None,
+                step=0.1,
+                help="Space between coils as a factor of coil length (0.5 means half coil length). Leave blank for automatic optimization"
+            )
+            if coil_spacing is not None:
+                explicit_params['coil_spacing'] = coil_spacing
+            else:
+                coil_spacing = 0.5  # Default value if not specified
 
-    # Magnet parameters
-    st.subheader("Magnet Specifications")
-    mag_col1, mag_col2 = st.columns(2)
-    with mag_col1:
-        magnet_material = st.selectbox(
-            "Magnet Material",
-            options=["N52 Neodymium", "N42 Neodymium", "N35 Neodymium"],
-            help="Type of permanent magnet"
-        )
-        magnet_diameter = st.number_input(
-            "Magnet Diameter (mm)",
-            min_value=1.0,
-            max_value=50.0,
-            value=12.0,
-            step=1.0,
-            help="Diameter of the magnet"
-        )
-    with mag_col2:
-        magnet_length = st.number_input(
-            "Magnet Length (mm)",
-            min_value=1.0,
-            max_value=100.0,
-            value=50.0,
-            step=1.0,
-            help="Length of the magnet"
-        )
-        magnetic_field = st.number_input(
-            "Magnetic Field (Tesla)",
-            min_value=0.1,
-            max_value=2.0,
-            value=1.2,
-            step=0.1,
-            help="Magnetic field strength of the magnet"
-        )
+        # Magnet parameters
+        st.subheader("Magnet Specifications")
+        mag_col1, mag_col2 = st.columns(2)
+        with mag_col1:
+            magnet_material = st.selectbox(
+                "Magnet Material",
+                options=["", "N52 Neodymium", "N42 Neodymium", "N35 Neodymium"],
+                help="Leave blank for automatic optimization"
+            )
+            if magnet_material:
+                explicit_params['magnet_material'] = magnet_material
+            else:
+                magnet_material = "N52 Neodymium"
+            
+            magnet_diameter = st.number_input(
+                "Magnet Diameter (mm)",
+                min_value=1.0,
+                max_value=50.0,
+                value=None,
+                step=1.0,
+                help="Leave blank for automatic optimization"
+            )
+            if magnet_diameter is not None:
+                explicit_params['magnet_diameter'] = magnet_diameter
+            else:
+                magnet_diameter = 12.0
 
-    # Tube parameters
-    st.subheader("Tube Specifications")
-    tube_col1, tube_col2 = st.columns(2)
-    with tube_col1:
-        pipe_thickness = st.number_input(
-            "Pipe Wall Thickness (mm)",
-            min_value=0.5,
-            max_value=10.0,
-            value=2.0,
-            step=0.5,
-            help="The thickness of the PVC pipe wall"
-        )
-        tube_material = st.selectbox(
-            "Tube Material",
-            options=["PVC"],
-            help="Material of the tube (currently only PVC is supported)"
-        )
+        with mag_col2:
+            magnet_length = st.number_input(
+                "Magnet Length (mm)",
+                min_value=1.0,
+                max_value=100.0,
+                value=None,
+                step=1.0,
+                help="Leave blank for automatic optimization"
+            )
+            if magnet_length is not None:
+                explicit_params['magnet_length'] = magnet_length
+            else:
+                magnet_length = 50.0
+            
+            magnetic_field = st.number_input(
+                "Magnetic Field (Tesla)",
+                min_value=0.1,
+                max_value=2.0,
+                value=None,
+                step=0.1,
+                help="Leave blank for automatic optimization"
+            )
+            if magnetic_field is not None:
+                explicit_params['magnetic_field'] = magnetic_field
+            else:
+                magnetic_field = 1.2
 
-    # Calculate button
-    if st.button("Calculate", type="primary"):
+        # Tube parameters
+        st.subheader("Tube Specifications")
+        tube_col1, _ = st.columns(2)
+        with tube_col1:
+            pipe_thickness = st.number_input(
+                "Pipe Wall Thickness (mm)",
+                min_value=0.5,
+                max_value=10.0,
+                value=None,
+                step=0.5,
+                help="Leave blank for automatic optimization"
+            )
+            if pipe_thickness is not None:
+                explicit_params['pipe_thickness'] = pipe_thickness
+            else:
+                pipe_thickness = 2.0
+
+    # Display which parameters will be used
+    if explicit_params:
+        st.markdown("""
+        <div style='background-color: #1a1a1a; padding: 15px; border-radius: 10px; margin: 10px 0; border: 1px solid #2d3436;'>
+            <p style='color: #4CAF50; margin: 0;'>✓ Using custom values for: """ + 
+            ", ".join(explicit_params.keys()) + """</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Calculate button with emphasis
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style='background-color: #1a1a1a; padding: 20px; border-radius: 10px; text-align: center; border: 1px solid #2d3436;'>
+        <p style='margin-bottom: 10px; color: #ffffff;'>Enter your desired voltage and current above, then click calculate. Optional parameters will be optimized automatically if left blank.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("""
+    <style>
+    div.stButton > button:first-child {
+        background-color: #0066cc;
+        color: #ffffff;
+        border: none;
+        padding: 0.5rem 1rem;
+        font-size: 1.1rem;
+        transition: all 0.3s ease;
+    }
+    div.stButton > button:first-child:hover {
+        background-color: #0052a3;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    if st.button("Calculate Generator Specifications", type="primary", use_container_width=True):
+        # Create magnet_specs dictionary only including explicitly set parameters
+        magnet_specs = {
+            "material": magnet_material,
+            "diameter": magnet_diameter/1000,  # Convert to meters
+            "length": magnet_length/1000,  # Convert to meters
+            "magnetic_field": magnetic_field
+        }
+        
+        # Only include explicitly set magnet parameters
+        if 'magnet_material' in explicit_params:
+            magnet_specs['material'] = explicit_params['magnet_material']
+        if 'magnet_diameter' in explicit_params:
+            magnet_specs['diameter'] = explicit_params['magnet_diameter']/1000
+        if 'magnet_length' in explicit_params:
+            magnet_specs['length'] = explicit_params['magnet_length']/1000
+        if 'magnetic_field' in explicit_params:
+            magnet_specs['magnetic_field'] = explicit_params['magnetic_field']
+
         calculator = ElectromagneticCalculator()
         results = calculator.calculate_system(
             target_voltage=target_voltage,
             target_current=target_current,
-            wire_diameter=wire_diameter/1000,  # Convert to meters
-            pipe_thickness=pipe_thickness/1000,  # Convert to meters
-            num_coils=num_coils,
-            coil_spacing=coil_spacing,
-            magnet_specs={
-                "material": magnet_material,
-                "diameter": magnet_diameter/1000,  # Convert to meters
-                "length": magnet_length/1000,  # Convert to meters
-                "magnetic_field": magnetic_field
-            }
+            wire_diameter=wire_diameter/1000 if 'wire_diameter' in explicit_params else None,
+            pipe_thickness=pipe_thickness/1000 if 'pipe_thickness' in explicit_params else None,
+            num_coils=num_coils if 'num_coils' in explicit_params else None,
+            coil_spacing=coil_spacing if 'coil_spacing' in explicit_params else None,
+            magnet_specs=magnet_specs if any(k in explicit_params for k in ['magnet_material', 'magnet_diameter', 'magnet_length', 'magnetic_field']) else None,
+            connection_type="series",
+            series_groups=1,
+            parallel_coils=1
         )
         recommendations = calculator.get_recommendations()
         weights = calculator.calculate_component_weights(results)
@@ -526,19 +607,25 @@ if 'results' in st.session_state:
         <div style='background-color: #1a1a1a; padding: 20px; border-radius: 10px; border: 1px solid #ffffff;'>
             <h3 style='color: #ff9800;'>🔄 Coil</h3>
             <ul style='list-style-type: none; padding: 0; color: #ffffff;'>
-                <li>Turns: {:,}</li>
+                <li>Total Turns: {:,}</li>
+                <li>Turns per Section: {:,}</li>
+                <li>Number of Sections: {}</li>
                 <li>Wire Diameter: {:.2f} mm</li>
                 <li>Inner Diameter: {:.1f} mm</li>
                 <li>Outer Diameter: {:.1f} mm</li>
-                <li>Length: {:.1f} mm</li>
+                <li>Section Length: {:.1f} mm</li>
+                <li>Total Length: {:.1f} mm</li>
                 <li>Weight: {:.1f} g</li>
             </ul>
         </div>
         """.format(
             st.session_state.results['coil']['turns'],
+            st.session_state.results['coil']['turns'] // num_coils,
+            num_coils,
             st.session_state.results['coil']['wire_diameter'],
             st.session_state.results['coil']['inner_diameter'],
             st.session_state.results['coil']['outer_diameter'],
+            st.session_state.results['coil']['length'] / num_coils,
             st.session_state.results['coil']['length'],
             st.session_state.weights['coil']
         ), unsafe_allow_html=True)
@@ -616,4 +703,253 @@ if 'results' in st.session_state:
         st.session_state.recommendations['coil'],
         st.session_state.recommendations['tube'],
         st.session_state.recommendations['operation']
-    ), unsafe_allow_html=True) 
+    ), unsafe_allow_html=True)
+
+# Add Instructions and Formulas Section
+st.markdown("---")
+st.header("📋 Build Instructions & Physics")
+
+# Instructions Tab and Formulas Tab
+instructions_tab, formulas_tab = st.tabs(["Build Instructions", "Physics & Formulas"])
+
+with instructions_tab:
+    st.subheader("How to Build the Generator")
+    
+    if 'results' in st.session_state:
+        # Convert dictionary to CoilSpecs object
+        coil_specs = CoilSpecs(
+            inner_diameter=st.session_state.results['coil']['inner_diameter'],
+            outer_diameter=st.session_state.results['coil']['outer_diameter'],
+            length=st.session_state.results['coil']['length'],
+            wire_diameter=st.session_state.results['coil']['wire_diameter'],
+            turns=st.session_state.results['coil']['turns'],
+            material="Copper"
+        )
+        
+        st.markdown(f"""
+        ### Materials Needed
+        1. **Tube (PVC Pipe)**
+           - PVC pipe with {st.session_state.results['tube']['inner_diameter']:.1f}mm inner diameter
+           - {pipe_thickness:.1f}mm wall thickness
+           - {st.session_state.results['tube']['length']:.1f}mm total length
+           - Cut ends must be smooth and perpendicular
+        
+        2. **Magnet Assembly**
+           - {st.session_state.results['magnet']['material']} magnets:
+             - {st.session_state.results['magnet']['diameter']:.1f}mm diameter
+             - {st.session_state.results['magnet']['length']:.1f}mm length
+             - {st.session_state.results['magnet']['magnetic_field']:.1f}T field strength
+           - Non-magnetic rod ({st.session_state.results['magnet']['diameter']*0.3:.1f}mm diameter)
+           - High-strength epoxy adhesive
+        
+        3. **Coil**
+           - Enameled copper wire ({st.session_state.results['coil']['wire_diameter']:.2f}mm diameter)
+           - Total wire length: {calculate_wire_length(coil_specs)*1000:.0f}mm
+           - {st.session_state.results['coil']['turns']} turns total
+           - Coil former/bobbin ({st.session_state.results['coil']['inner_diameter']:.1f}mm ID, {st.session_state.results['coil']['outer_diameter']:.1f}mm OD)
+           - Wire terminals or connectors rated for {st.session_state.results['performance']['current']:.1f}A
+        
+        ### Assembly Steps
+        
+        1. **Prepare the Tube**
+           - Cut PVC pipe to exactly {st.session_state.results['tube']['length']:.1f}mm length
+           - Clean and deburr both ends
+           - Mark centerline and coil positions ({st.session_state.results['coil']['length']/5:.1f}mm spacing)
+        
+        2. **Build Magnet Assembly**
+           - Cut rod to {st.session_state.results['tube']['length']*0.8:.1f}mm length
+           - Mark {3} magnet positions, spaced {st.session_state.results['tube']['length']*0.8/6:.1f}mm apart
+           - Apply epoxy and attach magnets with alternating poles (N-S-N)
+           - Let cure completely (24 hours)
+        
+        3. **Wind the Coil**
+           - Create or 3D print a coil former:
+             - Inner diameter: {st.session_state.results['coil']['inner_diameter']:.1f}mm
+             - Outer diameter: {st.session_state.results['coil']['outer_diameter']:.1f}mm
+             - Section length: {st.session_state.results['coil']['length']/5:.1f}mm
+           - Wind exactly {st.session_state.results['coil']['turns']} turns
+           - Maintain even spacing and tension
+           - Secure ends and add terminals
+        
+        4. **Final Assembly**
+           - Mount {5} coil sections on tube exterior
+           - Space coils {st.session_state.results['coil']['length']/5*0.5:.1f}mm apart
+           - Insert magnet assembly (ensure {(st.session_state.results['coil']['inner_diameter'] - st.session_state.results['magnet']['diameter'])/2:.1f}mm clearance)
+           - Test for smooth movement at {st.session_state.results['performance']['velocity']:.1f}m/s
+        
+        ### Performance Specifications
+        - Target output: {st.session_state.results['performance']['voltage']:.1f}V at {st.session_state.results['performance']['current']:.2f}A
+        - Expected power: {st.session_state.results['performance']['power']:.1f}W
+        - Coil resistance: {st.session_state.results['coil']['resistance']:.2f}Ω
+        - Required velocity: {st.session_state.results['performance']['velocity']:.2f}m/s
+        
+        ### Usage Tips
+        - Keep magnet assembly centered in tube
+        - Maintain {st.session_state.results['performance']['velocity']:.1f}m/s reciprocating motion
+        - Monitor temperature (max {60}°C)
+        - Consider adding bearings for reduced friction
+        - Total weight: {st.session_state.weights['total']:.0f}g
+        """)
+    else:
+        st.info("Click 'Calculate' to generate detailed build instructions with exact measurements.")
+
+with formulas_tab:
+    st.subheader("Physics & Formulas Used")
+    
+    st.markdown("""
+    ### Core Physics Principles
+    
+    #### Faraday's Law of Induction
+    The fundamental principle behind this generator is Faraday's law of electromagnetic induction:
+    """)
+    
+    st.latex(r"E = -N\frac{d\Phi_B}{dt} \text{ (V)}")
+    
+    st.markdown("""
+    Where:
+    - E = Induced EMF (volts, V)
+    - N = Number of turns in the coil (dimensionless)
+    - Φ_B = Magnetic flux (weber, Wb)
+    - t = Time (seconds, s)
+    
+    #### Key Calculations
+    
+    1. **Induced Voltage**
+    """)
+    
+    st.latex(r"V = \frac{N B A v}{L} \text{ (V)}")
+    
+    st.markdown("""
+    - N = Number of turns (dimensionless)
+    - B = Magnetic field strength (tesla, T)
+    - A = Coil cross-sectional area (m²)
+    - v = Magnet velocity (m/s)
+    - L = Coil length (m)
+    
+    2. **Coil Resistance**
+    """)
+    
+    st.latex(r"R = \rho \frac{l}{A} \text{ (}\Omega\text{)}")
+    
+    st.markdown("""
+    - ρ = Copper resistivity (Ω⋅m)
+    - l = Wire length (m)
+    - A = Wire cross-sectional area (m²)
+    
+    3. **Generated Current (Ohm's Law)**
+    """)
+    
+    st.latex(r"I = \frac{V}{R} \text{ (A)}")
+    
+    st.markdown("""
+    4. **Power Output**
+    """)
+    
+    st.latex(r"P = V \cdot I \text{ (W)}")
+    
+    st.markdown("""
+    ### Design Constraints
+    
+    1. **Magnetic Field Strength**
+    - Typical N52 Neodymium: 1.4-1.5 T
+    - Field strength decreases with temperature
+    
+    2. **Wire Current Density**
+    - Maximum safe current density: 4-6 A/mm²
+    - Higher density requires cooling
+    
+    3. **Mechanical Limits**
+    - Maximum practical velocity: 2-3 m/s
+    - Minimum clearance: 1-2 mm
+    
+    ### Optimization Parameters
+    
+    The calculator optimizes these parameters to meet your target voltage and current:
+    - Number of coil turns
+    - Wire diameter
+    - Coil geometry
+    - Magnet size and strength
+    - Operating velocity
+    
+    ### Constants Used
+    """)
+    
+    st.latex(r"""
+    \begin{align*}
+    \mu_0 &= 4\pi \times 10^{-7} \text{ T}\cdot\text{m}/\text{A} \\
+    \rho_{\text{Cu}} &= 1.68 \times 10^{-8} \text{ }\Omega\cdot\text{m} \text{ at } 20^\circ\text{C} \\
+    \rho_{\text{Cu}} &= 8960 \text{ kg}/\text{m}^3 \\
+    \rho_{\text{PVC}} &= 1380 \text{ kg}/\text{m}^3 \\
+    \rho_{\text{Nd}} &= 7500 \text{ kg}/\text{m}^3
+    \end{align*}
+    """)
+
+# Add connection type selection
+connection_type = st.selectbox(
+    "Coil Connection Type",
+    ["series", "parallel", "series_parallel"],
+    index=0,
+    help="Choose how coils are connected: series (higher voltage), parallel (higher current), or series-parallel (balanced)"
+)
+
+# Show additional controls for series-parallel configuration
+if connection_type == "series_parallel":
+    col1, col2 = st.columns(2)
+    with col1:
+        series_groups = st.number_input(
+            "Number of Series Groups",
+            min_value=1,
+            max_value=10,
+            value=2,
+            help="Number of groups connected in series"
+        )
+    with col2:
+        parallel_coils = st.number_input(
+            "Coils per Group",
+            min_value=1,
+            max_value=10,
+            value=2,
+            help="Number of coils connected in parallel within each group"
+        )
+else:
+    series_groups = 1
+    parallel_coils = 1
+
+# Update the calculation call
+results = calculator.calculate_system(
+    target_voltage=target_voltage,
+    target_current=target_current,
+    wire_diameter=wire_diameter if 'wire_diameter' in explicit_params else None,
+    pipe_thickness=pipe_thickness if 'pipe_thickness' in explicit_params else None,
+    num_coils=num_coils if 'num_coils' in explicit_params else 5,
+    coil_spacing=coil_spacing if 'coil_spacing' in explicit_params else 0.5,
+    magnet_specs=magnet_specs if any(k in explicit_params for k in ['magnet_material', 'magnet_diameter', 'magnet_length', 'magnetic_field']) else None,
+    connection_type=connection_type,
+    series_groups=series_groups,
+    parallel_coils=parallel_coils
+)
+
+# Add connection information to the results display
+st.subheader("Connection Configuration")
+connection_info = {
+    "series": "All coils connected in series (higher voltage, same current)",
+    "parallel": "All coils connected in parallel (same voltage, higher current)",
+    "series_parallel": f"{series_groups} groups of {parallel_coils} parallel coils each (balanced voltage and current)"
+}
+st.info(connection_info[connection_type])
+
+# Update the coil specifications display
+st.subheader("Coil Specifications")
+coil_specs = results["coil"]
+st.write(f"**Connection Type:** {coil_specs['connection']['type']}")
+if connection_type == "series_parallel":
+    st.write(f"**Series Groups:** {coil_specs['connection']['series_groups']}")
+    st.write(f"**Parallel Coils per Group:** {coil_specs['connection']['parallel_coils']}")
+st.write(f"**Total Coils:** {coil_specs['num_sections']}")
+st.write(f"**Turns per Coil:** {coil_specs['turns'] // coil_specs['num_sections']}")
+st.write(f"**Wire Diameter:** {coil_specs['wire_diameter']:.2f} mm")
+st.write(f"**Coil Inner Diameter:** {coil_specs['inner_diameter']:.2f} mm")
+st.write(f"**Coil Outer Diameter:** {coil_specs['outer_diameter']:.2f} mm")
+st.write(f"**Coil Length:** {coil_specs['length']:.2f} mm")
+st.write(f"**Coil Spacing:** {coil_specs['spacing']:.2f} mm")
+st.write(f"**Total Resistance:** {coil_specs['resistance']:.2f} Ω") 
